@@ -47,6 +47,10 @@ export {
 	## Should a NOTICE be raised
 	option do_notice: bool = T;
 
+	## If set, accounting fields (bytes, packets, etc.) will be logged as the
+	## change from the previous time this connection was logged.
+	option incremental_log_format: bool = F;
+
 	## Event for other scripts to use
 	global long_conn_found: event(c: connection);
 }
@@ -55,6 +59,26 @@ redef record connection += {
 	## Offset of the currently watched connection duration by the long-connections script.
 	long_conn_offset: count &default=0;
 };
+
+type PreviousValues: record {
+	## Number of payload bytes the originator sent as of the last log event.
+	orig_bytes: count &default=0;
+	## Number of payload bytes the responder sent as of the last log event.
+	resp_bytes: count &default=0;
+	## Number of bytes missed in content gaps as of the last log event.
+	missed_bytes: count &default=0;
+	## Number of packets the originator sent as of the last log event.
+	orig_pkts: count &default=0;
+	## Number of IP level bytes the originator sent as of the last log event.
+	orig_ip_bytes: count &default=0;
+	## Number of packets the responder sent as of the last log event.
+	resp_pkts: count &default=0;
+	## Number of IP level bytes the responder sent as of the last log event.
+	resp_ip_bytes: count &default=0;
+};
+
+# We do this here to not mess with the upstream Conn record.
+global tracking_conns: table[string] of PreviousValues;
 
 event zeek_init() &priority=5
 	{
@@ -127,3 +151,34 @@ event new_connection(c: connection)
 		ConnPolling::watch(c, long_callback, 1, check[0]);
 		}
 	}
+
+hook log_policy(rec: Conn::Info, id: Log::ID, filter: Log::Filter)
+    {
+	if (!incremental_log_format)
+		return;
+
+    if (rec$uid !in tracking_conns)
+    	tracking_conns[rec$uid] = PreviousValues();
+    local old = tracking_conns[rec$uid];
+    
+    rec$orig_bytes -= old$orig_bytes;
+    old$orig_bytes += rec$orig_bytes;
+
+    rec$resp_bytes -= old$resp_bytes;
+    old$resp_bytes += rec$resp_bytes;
+    
+    rec$missed_bytes -= old$missed_bytes;
+    old$missed_bytes += rec$missed_bytes;
+    
+    rec$orig_pkts -= old$orig_pkts;
+    old$orig_pkts += rec$orig_pkts;
+    
+    rec$orig_ip_bytes -= old$orig_ip_bytes;
+    old$orig_ip_bytes += rec$orig_ip_bytes;
+    
+    rec$resp_pkts -= old$resp_pkts;
+    old$resp_pkts += rec$resp_pkts;
+    
+    rec$resp_ip_bytes -= old$resp_ip_bytes;
+    old$resp_ip_bytes += rec$resp_ip_bytes;
+    }
