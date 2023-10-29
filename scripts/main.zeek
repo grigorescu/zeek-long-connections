@@ -51,6 +51,14 @@ export {
 	## change from the previous time this connection was logged.
 	option incremental_log_format: bool = F;
 
+	## If set, will emit a final log line when the connection closes.
+	option log_on_connection_state_remove: bool = F;
+
+	## If set to false, will not log if orig_ip_bytes, resp_ip_bytes,
+	## and missed_bytes are all 0 since the last logged line. Prevents noise
+	## for connections that idle for a long time.
+	option log_zero_byte_updates: bool = T;
+
 	## Event for other scripts to use
 	global long_conn_found: event(c: connection);
 }
@@ -152,14 +160,29 @@ event new_connection(c: connection)
 		}
 	}
 
+event connection_state_remove(c: connection)
+	{
+	if (log_on_connection_state_remove)
+		Log::write(LOG, c$conn);
+
+	delete tracking_conns[c$uid];
+	}
+
 hook log_policy(rec: Conn::Info, id: Log::ID, filter: Log::Filter)
     {
-	if (!incremental_log_format)
-		return;
-
     if (rec$uid !in tracking_conns)
     	tracking_conns[rec$uid] = PreviousValues();
+	
     local old = tracking_conns[rec$uid];
+
+	if (!log_zero_byte_updates &&
+	    rec$orig_ip_bytes == old$orig_ip_bytes &&
+	    rec$resp_ip_bytes == old$resp_ip_bytes &&
+	    rec$missed_bytes == old$missed_bytes)
+		break;
+
+	if (!incremental_log_format)
+		return;
     
     rec$orig_bytes -= old$orig_bytes;
     old$orig_bytes += rec$orig_bytes;
